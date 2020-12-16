@@ -26,7 +26,6 @@ CREATE TABLE resources
     id SERIAL PRIMARY KEY,
     resource_pool INT NOT NULL,
     value JSONB NOT NULL,
-    value_hash INT NOT NULL,
 
     UNIQUE (value, resource_pool),
     CONSTRAINT resources_resource_pools FOREIGN KEY (resource_pool)

@@ -3,21 +3,25 @@ use std::{
     process::{Command, Output},
 };
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, ensure, anyhow};
 use postgres::{Client, NoTls, Row};
 use serde_json::Value;
 use tracing::*;
 use tracing_subscriber::*;
 use stopwatch::{Stopwatch};
-use std::hash::{Hash, Hasher};
-use std::convert::TryFrom;
+
+/*
+Shortcomings:
+no db pooling
+allocation strategy - only IPv4 is added to DB and used for resource allocation
+Resource states not supported: on bench, free (deleted currently)
+ */
 
 #[derive(Debug, PartialEq)]
 struct ResourcePool {
     id: i32,
     name: String,
     version: i32,
-    // TODO allocation strategy is hardcoded
 }
 
 #[derive(Debug, PartialEq)]
@@ -25,23 +29,15 @@ struct Resource {
     id: Option<i32>,
     resource_pool_id: i32,
     value: Value,
-    value_hash: i32,
 }
 
 impl Resource {
     fn new(resource_pool_id: i32, value_str: &str) -> Result<Resource> {
         let value = serde_json::from_str(value_str)?;
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        let h1: i128 = hasher.finish().into();
-        let h2 = h1.count_ones() / 2;
-
-        let value_hash = i32::try_from(h2).unwrap_or(i32::max_value());
-        value_str.hash(&mut hasher);
         Ok(Resource {
             id: Option::None,
             resource_pool_id,
             value,
-            value_hash,
         })
     }
 }
@@ -130,7 +126,6 @@ impl DB {
     }
 
     // allocation strategies
-    // FIXME
     pub fn get_ipv4_script(&mut self) -> Result<String> {
         let found = self.client.query_one(
             "SELECT script FROM allocation_strategies WHERE name='ipv4'", &[])?;
@@ -171,26 +166,33 @@ impl DB {
     }
 
     // resources
-    pub fn insert_resources(&mut self, pool: ResourcePool, items: &Vec<Resource>) -> Result<()> {
-        // FIXME : update pool version atomically
+    pub fn insert_resources(&mut self, mut pool: ResourcePool, items: &Vec<Resource>) -> Result<()> {
+        let mut transaction = self.client.transaction()?;
         ensure!(items.len() > 0, "Cannot insert zero resources");
-        const PARAMS_PER_ROW: usize = 3;
+        const PARAMS_PER_ROW: usize = 2;
         let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
             Vec::with_capacity(PARAMS_PER_ROW * items.len());
         let mut query =
-            "INSERT INTO resources (resource_pool, value, value_hash) VALUES ".to_owned();
+            "INSERT INTO resources (resource_pool, value) VALUES ".to_owned();
         let mut idx = 0;
         for resource in items {
             ensure!(resource.resource_pool_id == pool.id, "Wrong resource id");
             params.push(&resource.resource_pool_id);
             params.push(&resource.value);
-            params.push(&resource.value_hash);
-            query += &format!("(${},${},${}),", 3 * idx + 1, 3 * idx + 2, 3 * idx + 3);
+            query += &format!("(${},${}),", PARAMS_PER_ROW * idx + 1, PARAMS_PER_ROW * idx + 2);
             idx += 1;
         }
         ensure!(query.remove(query.len() - 1) == ',', "Expected to remove a coma");
-        query += " RETURNING id as id";
-        let _rows = self.client.query(query.as_str(), &params)?;
+        // if IDs are needed, add " RETURNING id as id";
+        let inserted = transaction.execute(query.as_str(), &params)?;
+        debug!("inserted {}", inserted);
+        ensure!(inserted == items.len() as u64, "Insertion of resources returned wrong number of rows");
+        // update pool version
+        pool.version += 1;
+        let updated_pool = transaction.execute("UPDATE resource_pools SET version=$1 WHERE id=$2",
+                                               &[&pool.version, &pool.id])?;
+        ensure!(updated_pool == 1, "Update of resource_pools returned wrong number of rows");
+        transaction.commit()?;
         Ok(())
     }
 }
@@ -341,15 +343,17 @@ mod tests {
         let pool = create_random_pool(&mut db)?;
 
         let resource_pool_id = pool.id;
+        let old_version = pool.version;
         let sw = Stopwatch::start_new();
         let mut resources = Vec::with_capacity(ROW_COUNT);
         for idx in 0..ROW_COUNT {
             resources.push(Resource::new(resource_pool_id,
                                          &format!("{{\"address\":\"1.1.1.{}\"}}", idx))?);
         }
-
         db.insert_resources(pool, &resources)?;
         debug!("inserted {} rows in {}ms", resources.len(), sw.elapsed_ms());
+        // check that version is incremented
+        assert_eq!(db.get_resource_pool_by_id(resource_pool_id)?.version, old_version + 1);
         Ok(())
     }
 }
