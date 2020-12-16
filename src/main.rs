@@ -1,12 +1,50 @@
-use anyhow::{Context, Result};
-use quanta::Clock;
 use std::{
     env,
     process::{Command, Output},
 };
+
+use anyhow::{Context, Result, anyhow, ensure};
+use postgres::{Client, NoTls, Row};
+use serde_json::Value;
 use tracing::*;
 use tracing_subscriber::*;
-use serde_json::Value;
+use stopwatch::{Stopwatch};
+use std::hash::{Hash, Hasher};
+use std::convert::TryFrom;
+
+#[derive(Debug, PartialEq)]
+struct ResourcePool {
+    id: i32,
+    name: String,
+    version: i32,
+    // TODO allocation strategy is hardcoded
+}
+
+#[derive(Debug, PartialEq)]
+struct Resource {
+    id: Option<i32>,
+    resource_pool_id: i32,
+    value: Value,
+    value_hash: i32,
+}
+
+impl Resource {
+    fn new(resource_pool_id: i32, value_str: &str) -> Result<Resource> {
+        let value = serde_json::from_str(value_str)?;
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        let h1: i128 = hasher.finish().into();
+        let h2 = h1.count_ones() / 2;
+
+        let value_hash = i32::try_from(h2).unwrap_or(i32::max_value());
+        value_str.hash(&mut hasher);
+        Ok(Resource {
+            id: Option::None,
+            resource_pool_id,
+            value,
+            value_hash,
+        })
+    }
+}
 
 struct WasmerEnv {
     wasmer_command: Command,
@@ -76,32 +114,114 @@ impl WasmerEnv {
     }
 }
 
+struct DB {
+    client: Client,
+}
+
+impl DB {
+    pub fn new_from_env() -> Result<DB> {
+        let params = std::env::var("DB_PARAMS")?;
+        Self::new(&params)
+    }
+
+    pub fn new(params: &str) -> Result<DB> {
+        let client = Client::connect(params, NoTls)?;
+        Ok(DB { client })
+    }
+
+    // allocation strategies
+    // FIXME
+    pub fn get_ipv4_script(&mut self) -> Result<String> {
+        let found = self.client.query_one(
+            "SELECT script FROM allocation_strategies WHERE name='ipv4'", &[])?;
+        let script: &str = found.get(0);
+        Ok(script.to_owned())
+    }
+
+    // resource pools
+    pub fn insert_resource_pool(&mut self, name: &str) -> Result<ResourcePool> {
+        let version: i32 = 0;
+        let allocation_strategy: i32 = 1;//FIXME hardcoded ipv4 strategy
+        let row = self.client.query_one(
+            "INSERT INTO resource_pools (name, version, resource_pool_allocation_strategy) \
+            VALUES ($1, $2, $3) RETURNING id as id",
+            &[&name, &version, &allocation_strategy],
+        )?;
+        let id: i32 = row.get(0);
+        Ok(ResourcePool { id, name: name.to_owned(), version })
+    }
+
+    pub fn get_resource_pool_by_id(&mut self, id: i32) -> Result<ResourcePool> {
+        let found = self.client.query_one(
+            "SELECT id, name, version FROM resource_pools WHERE id=$1", &[&id])?;
+        Self::row_to_resource_pool(found)
+    }
+
+    pub fn get_resource_pool_by_name(&mut self, name: &str) -> Result<ResourcePool> {
+        let found = self.client.query_one(
+            "SELECT id, name, version FROM resource_pools WHERE name=$1", &[&name])?;
+        Self::row_to_resource_pool(found)
+    }
+
+    fn row_to_resource_pool(row: Row) -> Result<ResourcePool> {
+        let id: i32 = row.get(0);
+        let name: String = row.get(1);
+        let version: i32 = row.get(2);
+        Ok(ResourcePool { id, name, version })
+    }
+
+    // resources
+    pub fn insert_resources(&mut self, pool: ResourcePool, items: &Vec<Resource>) -> Result<()> {
+        // FIXME : update pool version atomically
+        ensure!(items.len() > 0, "Cannot insert zero resources");
+        const PARAMS_PER_ROW: usize = 3;
+        let mut params: Vec<&(dyn postgres::types::ToSql + Sync)> =
+            Vec::with_capacity(PARAMS_PER_ROW * items.len());
+        let mut query =
+            "INSERT INTO resources (resource_pool, value, value_hash) VALUES ".to_owned();
+        let mut idx = 0;
+        for resource in items {
+            ensure!(resource.resource_pool_id == pool.id, "Wrong resource id");
+            params.push(&resource.resource_pool_id);
+            params.push(&resource.value);
+            params.push(&resource.value_hash);
+            query += &format!("(${},${},${}),", 3 * idx + 1, 3 * idx + 2, 3 * idx + 3);
+            idx += 1;
+        }
+        ensure!(query.remove(query.len() - 1) == ',', "Expected to remove a coma");
+        query += " RETURNING id as id";
+        let _rows = self.client.query(query.as_str(), &params)?;
+        Ok(())
+    }
+}
+
 fn main() -> Result<()> {
-    let clock = Clock::new();
-    let start = clock.start();
+    let sw = Stopwatch::start_new();
+
     let fmt_event = tracing_subscriber::fmt::format::Format::default().with_target(false);
     tracing_subscriber::fmt()
         .event_format(fmt_event)
         .with_env_filter(EnvFilter::from_default_env())
         .init();
-    let end = clock.end();
-    trace!("Initialized in {:?}", clock.delta(start, end));
-    let start = clock.start();
+
+    debug!("Initialized in {}ms", sw.elapsed_ms());
 
     let span = span!(Level::INFO, "my_span");
     let _enter = span.enter();
 
 
-    let end = clock.end();
-    trace!("Finished in {:?}", clock.delta(start, end));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use serde_json::json;
     use std::sync::Once;
+
+    use rand::Rng;
+    use rand::distributions::{Alphanumeric};
+    use serde_json::json;
+
+    use super::*;
 
     static START: Once = Once::new();
 
@@ -116,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn invoke_js() -> Result<()> {
+    fn wasmer_invoke_js() -> Result<()> {
         initialize_logging();
         debug!("test");
         let mut wasmer_env = WasmerEnv::new()?;
@@ -127,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn invoke_and_parse() -> Result<()> {
+    fn wasmer_invoke_and_parse() -> Result<()> {
         initialize_logging();
         let mut wasmer_env = WasmerEnv::new()?;
         let script = "function invoke() {\
@@ -144,7 +264,7 @@ mod tests {
         });
         let current_resources = json!([
             "res1", "res2"
-        ]).as_array().ok_or(anyhow::anyhow!("Unexpected"))?.to_owned();
+        ]).as_array().ok_or(anyhow!("Unexpected"))?.to_owned();
 
         let actual = wasmer_env.invoke_and_parse(script, user_input, resource_pool_properties,
                                                  resource_pool, current_resources, "invoke()")?;
@@ -156,6 +276,80 @@ mod tests {
             "currentResources": ["res1", "res2"]
         });
         assert_eq!(expected, actual);
+        Ok(())
+    }
+
+    #[test]
+    fn db_get_ipv4_script() -> Result<()> {
+        initialize_logging();
+
+        let mut db = DB::new_from_env()?;
+        let sw = Stopwatch::start_new();
+        let script = db.get_ipv4_script()?;
+        debug!("Found row in {}ms", sw.elapsed_ms());
+        trace!("found script: {}", script);
+        Ok(())
+    }
+
+    fn create_random_pool(db: &mut DB) -> Result<ResourcePool> {
+        let random_string: String = rand::thread_rng().sample_iter(&Alphanumeric).take(10).collect();
+        // check that it does not exist
+        assert!(db.get_resource_pool_by_name(&random_string).is_err());
+        db.insert_resource_pool(&random_string)
+    }
+
+    #[test]
+    fn db_resource_pool() -> Result<()> {
+        initialize_logging();
+
+        let mut db = DB::new_from_env()?;
+        let sw = Stopwatch::start_new();
+        let inserted = create_random_pool(&mut db)?;
+        debug!("Inserted row in {}ms", sw.elapsed_ms());
+        let sw = Stopwatch::start_new();
+        let by_name = db.get_resource_pool_by_name(&inserted.name)?;
+        debug!("Found row in {}ms", sw.elapsed_ms());
+        let sw = Stopwatch::start_new();
+        assert_eq!(inserted, by_name);
+        let by_id = db.get_resource_pool_by_id(inserted.id)?;
+        debug!("Found row in {}ms", sw.elapsed_ms());
+        assert_eq!(inserted, by_id);
+        Ok(())
+    }
+
+    #[test]
+    fn db_insert_resources_duplicates_should_fail() -> Result<()> {
+        initialize_logging();
+        let mut db = DB::new_from_env()?;
+        let pool = create_random_pool(&mut db)?;
+        let resource_pool_id = pool.id;
+
+        let resources = vec!(
+            Resource::new(resource_pool_id, "{\"address\":\"1.1.1.1\"}")?,
+            Resource::new(resource_pool_id, "{\"address\":\"1.1.1.1\"}")?,
+        );
+
+        db.insert_resources(pool, &resources).expect_err("Should not accept duplicates");
+        Ok(())
+    }
+
+    #[test]
+    fn db_insert_resources() -> Result<()> {
+        initialize_logging();
+        const ROW_COUNT: usize = 100;
+        let mut db = DB::new_from_env()?;
+        let pool = create_random_pool(&mut db)?;
+
+        let resource_pool_id = pool.id;
+        let sw = Stopwatch::start_new();
+        let mut resources = Vec::with_capacity(ROW_COUNT);
+        for idx in 0..ROW_COUNT {
+            resources.push(Resource::new(resource_pool_id,
+                                         &format!("{{\"address\":\"1.1.1.{}\"}}", idx))?);
+        }
+
+        db.insert_resources(pool, &resources)?;
+        debug!("inserted {} rows in {}ms", resources.len(), sw.elapsed_ms());
         Ok(())
     }
 }
