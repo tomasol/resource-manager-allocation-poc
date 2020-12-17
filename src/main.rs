@@ -11,28 +11,6 @@ use tracing_subscriber::*;
 use stopwatch::{Stopwatch};
 use serde_json::json;
 
-/// Prototype of allocating resources using different schema approach.
-/// See migrations folder for the actual SQL schema.
-/// Key differences:
-/// * resource properties are JSONB column instead of separate table
-/// * resource pools have version column for optimistic locking
-///
-/// # Shortcomings
-/// No db pooling currently implemented
-/// Allocation strategy - only IPv4 is added to DB and used for resource allocation
-/// Pool properties are hardcoded in tests to: {"address": "10.0.0.0","prefix": 8}
-/// Resource states not supported: on bench, free - present resource == claimed
-///
-/// # Benefits
-/// No long running transactions
-/// No serializable isolation
-/// One pool allocation cannot degrade performance of other pool allocations
-/// Fast bulk insertion of resources using a single INSERT statement
-/// No need to check for resource duplicates - use UNIQUE constraint
-/// No performance degradation when resources contains 10k+ rows
-///
-/// # Future exploration
-/// Tight wasmer integration
 #[derive(Debug, PartialEq)]
 struct ResourcePool {
     id: i32,
