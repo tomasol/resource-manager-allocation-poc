@@ -292,6 +292,8 @@ mod tests {
     use rand::Rng;
     use rand::distributions::{Alphanumeric};
     use serde_json::json;
+    use std::str::FromStr;
+    use std::thread;
 
     use super::*;
 
@@ -300,7 +302,9 @@ mod tests {
 
     fn initialize_logging() {
         START.call_once(|| {
-            let fmt_event = tracing_subscriber::fmt::format::Format::default().with_target(false);
+            let fmt_event = tracing_subscriber::fmt::format::Format::default()
+                .with_target(false)
+                .with_thread_names(true);
             tracing_subscriber::fmt()
                 .event_format(fmt_event)
                 .with_env_filter(EnvFilter::from_default_env())
@@ -492,17 +496,21 @@ mod tests {
         Ok(())
     }
 
+    // Get env.var value. If present, panic on parsing error.
+    fn get_env_value<F: FromStr>(key: &str, default_value: F) -> F
+        where <F as FromStr>::Err: std::fmt::Debug {
+        env::var(key)
+            .map(|c| c.parse().unwrap())
+            .unwrap_or(default_value)
+    }
+
     #[test]
     fn execute_ipv4_script_with_db() -> Result<()> {
         initialize_logging();
 
         let sw = Stopwatch::start_new();
-        let row_count = env::var("ROW_COUNT")
-            .map(|c| c.parse::<usize>().unwrap())
-            .unwrap_or(100);
-        let iterations = env::var("ITERATIONS")
-            .map(|c| c.parse::<i32>().unwrap())
-            .unwrap_or(1);
+        let row_count = get_env_value("ROW_COUNT", 100);
+        let iterations = get_env_value("ITERATIONS", 1);
 
         let mut db = DB::new_from_env()?;
         let mut pool = create_random_pool(&mut db)?;
@@ -512,10 +520,10 @@ mod tests {
             "resourceCount": row_count
         });
         info!("Created pool in {}ms", sw.elapsed_ms());
-        for iteration in 1..iterations+1 {
+        for iteration in 1..iterations + 1 {
             info!("Starting iteration {}", iteration);
             let sw = Stopwatch::start_new();
-            let (pool2, resources) = db.allocate_resources(
+            let (pool2, _resources) = db.allocate_resources(
                 pool, &mut wasmer_env, user_input.clone())?;
             pool = pool2;
             // check that version is incremented
@@ -533,6 +541,24 @@ mod tests {
             }
             info!("Inserted {} resources in {}ms", row_count, sw.elapsed_ms());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn parallel_allocation() -> Result<()> {
+        initialize_logging();
+
+        let sw = Stopwatch::start_new();
+        let number_of_threads = get_env_value("NUMBER_OF_THREADS", 2);
+        let mut join_handles = vec![];
+        for _ in 0..number_of_threads {
+            join_handles.push(thread::spawn(move || {
+                execute_ipv4_script_with_db().unwrap();
+            }));
+        }
+        // join all
+        join_handles.into_iter().for_each(|handle| handle.join().unwrap());
+        info!("Finished executing {} threads in {}ms", number_of_threads, sw.elapsed_ms());
         Ok(())
     }
 }
