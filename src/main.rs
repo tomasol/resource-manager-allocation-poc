@@ -15,7 +15,7 @@ Shortcomings:
 no db pooling
 allocation strategy - only IPv4 is added to DB and used for resource allocation
 Resource states not supported: on bench, free (deleted currently)
- */
+*/
 
 #[derive(Debug, PartialEq)]
 struct ResourcePool {
@@ -126,21 +126,20 @@ impl DB {
     }
 
     // allocation strategies
-    pub fn get_ipv4_script(&mut self) -> Result<String> {
+    pub fn get_allocation_script(&mut self, id: i32) -> Result<String> {
         let found = self.client.query_one(
-            "SELECT script FROM allocation_strategies WHERE name='ipv4'", &[])?;
+            "SELECT script FROM allocation_strategies WHERE id=$1", &[&id])?;
         let script: &str = found.get(0);
         Ok(script.to_owned())
     }
 
     // resource pools
-    pub fn insert_resource_pool(&mut self, name: &str) -> Result<ResourcePool> {
+    pub fn insert_resource_pool(&mut self, name: &str, allocation_strategy_id: i32) -> Result<ResourcePool> {
         let version: i32 = 0;
-        let allocation_strategy: i32 = 1;//FIXME hardcoded ipv4 strategy
         let row = self.client.query_one(
             "INSERT INTO resource_pools (name, version, resource_pool_allocation_strategy) \
             VALUES ($1, $2, $3) RETURNING id as id",
-            &[&name, &version, &allocation_strategy],
+            &[&name, &version, &allocation_strategy_id],
         )?;
         let id: i32 = row.get(0);
         Ok(ResourcePool { id, name: name.to_owned(), version })
@@ -196,6 +195,18 @@ impl DB {
         transaction.commit()?;
         Ok(())
     }
+
+    pub fn get_resources(&mut self, resource_pool_id: i32) -> Result<Vec<Resource>> {
+        let rows = self.client.query(
+            "SELECT id, value FROM resources WHERE resource_pool=$1", &[&resource_pool_id])?;
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let id: i32 = row.get(0);
+            let value: Value = row.get(1);
+            result.push(Resource { id: Some(id), resource_pool_id, value });
+        }
+        Ok(result)
+    }
 }
 
 fn main() -> Result<()> {
@@ -227,6 +238,7 @@ mod tests {
     use super::*;
 
     static START: Once = Once::new();
+    const IPV4_ALLOCATION_STRATEGY_ID: i32 = 1;
 
     fn initialize_logging() {
         START.call_once(|| {
@@ -289,7 +301,7 @@ mod tests {
 
         let mut db = DB::new_from_env()?;
         let sw = Stopwatch::start_new();
-        let script = db.get_ipv4_script()?;
+        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID)?;
         debug!("Found row in {}ms", sw.elapsed_ms());
         trace!("found script: {}", script);
         Ok(())
@@ -300,7 +312,7 @@ mod tests {
         initialize_logging();
 
         let mut db = DB::new_from_env()?;
-        let script = db.get_ipv4_script()?;
+        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID)?;
 
         let mut wasmer_env = WasmerEnv::new()?;
 
@@ -332,7 +344,7 @@ mod tests {
         let random_string: String = rand::thread_rng().sample_iter(&Alphanumeric).take(10).collect();
         // check that it does not exist
         assert!(db.get_resource_pool_by_name(&random_string).is_err());
-        db.insert_resource_pool(&random_string)
+        db.insert_resource_pool(&random_string, IPV4_ALLOCATION_STRATEGY_ID)
     }
 
     #[test]
@@ -371,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn db_insert_resources() -> Result<()> {
+    fn db_resources() -> Result<()> {
         initialize_logging();
         const ROW_COUNT: usize = 100;
         let mut db = DB::new_from_env()?;
@@ -389,6 +401,11 @@ mod tests {
         debug!("inserted {} rows in {}ms", resources.len(), sw.elapsed_ms());
         // check that version is incremented
         assert_eq!(db.get_resource_pool_by_id(resource_pool_id)?.version, old_version + 1);
+        // get resources
+        let found_resources = db.get_resources(resource_pool_id)?;
+        assert_eq!(ROW_COUNT, found_resources.len());
+        assert_eq!(resources.iter().map(|it| &it.value).collect::<Vec<&Value>>(),
+            found_resources.iter().map(|it| &it.value).collect::<Vec<&Value>>());
         Ok(())
     }
 }
