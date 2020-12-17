@@ -53,7 +53,7 @@ function inet_aton(addrstr) {
     var res = re.exec(addrstr);
 
     if (res === null) {
-        console.error("Address: " + addrstr + " is invalid, does nott match regex: " + re);
+        console.error("Address: " + addrstr + " is invalid, does not match regex: " + re);
         return null
     }
 
@@ -211,33 +211,6 @@ function invoke() {
     }
     return result
 }
-
-// STRATEGY_END
-
-// For testing purposes
-function invokeWithParams(currentResourcesArg, resourcePoolArg, userInputArg) {
-    currentResources = currentResourcesArg;
-    resourcePoolProperties = resourcePoolArg;
-    userInput = userInputArg;
-    return invoke()
-}
-
-function invokeWithParamsCapacity(currentResourcesArg, resourcePoolArg, userInputArg) {
-    currentResources = currentResourcesArg;
-    resourcePoolProperties = resourcePoolArg;
-    userInput = userInputArg;
-    return capacity()
-}
-
-
-exports.invoke = invoke;
-exports.capacity = capacity;
-exports.invokeWithParams = invokeWithParams;
-exports.invokeWithParamsCapacity = invokeWithParamsCapacity;
-exports.utilizedCapacity = utilizedCapacity;
-exports.freeCapacity = freeCapacity;
-// For testing purposes
-
 ');
 
 INSERT INTO resource_pools

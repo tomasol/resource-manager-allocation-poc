@@ -100,7 +100,7 @@ impl WasmerEnv {
         let output = self.invoke_js(&script)?;
         trace!("Output {:?}", output);
         let val: Value = serde_json::from_slice(&output.stdout)
-            .context(format!("Cannot deserialize '{:?}'", output.stdout))?;
+            .context(format!("Cannot deserialize '{:?}'", output))?;
         Ok(val)
     }
 
@@ -175,6 +175,7 @@ impl DB {
         let mut query =
             "INSERT INTO resources (resource_pool, value) VALUES ".to_owned();
         let mut idx = 0;
+        // TODO: add a limit on query size
         for resource in items {
             ensure!(resource.resource_pool_id == pool.id, "Wrong resource id");
             params.push(&resource.resource_pool_id);
@@ -240,7 +241,7 @@ mod tests {
     #[test]
     fn wasmer_invoke_js() -> Result<()> {
         initialize_logging();
-        debug!("test");
+
         let mut wasmer_env = WasmerEnv::new()?;
         let output = wasmer_env.invoke_js("console.log(2+2)")?;
         trace!("{:?}", output);
@@ -251,6 +252,7 @@ mod tests {
     #[test]
     fn wasmer_invoke_and_parse() -> Result<()> {
         initialize_logging();
+
         let mut wasmer_env = WasmerEnv::new()?;
         let script = "function invoke() {\
         return {mykey:1, userInput, resourcePoolProperties, resourcePool, currentResources}\
@@ -290,6 +292,39 @@ mod tests {
         let script = db.get_ipv4_script()?;
         debug!("Found row in {}ms", sw.elapsed_ms());
         trace!("found script: {}", script);
+        Ok(())
+    }
+
+    #[test]
+    fn execute_ipv4_script() -> Result<()> {
+        initialize_logging();
+
+        let mut db = DB::new_from_env()?;
+        let script = db.get_ipv4_script()?;
+
+        let mut wasmer_env = WasmerEnv::new()?;
+
+        let user_input = json!({
+            "resourceCount": 2
+        });
+        let resource_pool_properties = json!({
+            "address": "10.0.0.0",
+            "prefix": 24,
+        });
+        let resource_pool = json!({});
+        let current_resources = json!([
+            {"Properties": {"address": "10.0.0.1"}},
+            {"Properties": {"address": "10.0.0.2"}}
+        ]).as_array().ok_or(anyhow!("Unexpected"))?.to_owned();
+
+        let actual = wasmer_env.invoke_and_parse(&script, user_input, resource_pool_properties,
+                                                 resource_pool, current_resources, "invoke()")?;
+        let expected = json!([
+            {"address":"10.0.0.0"},
+            {"address":"10.0.0.3"}
+        ]);
+        assert_eq!(expected, actual);
+
         Ok(())
     }
 
