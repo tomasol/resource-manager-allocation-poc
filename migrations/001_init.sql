@@ -34,6 +34,11 @@ CREATE TABLE resources
         ON DELETE SET NULL
 );
 
+CREATE INDEX resources_resource_pool
+    ON resources USING btree
+    (resource_pool ASC NULLS LAST)
+    TABLESPACE pg_default;
+
 INSERT INTO allocation_strategies
     (id, name, script) VALUES
     (1, 'ipv4',
