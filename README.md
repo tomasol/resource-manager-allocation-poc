@@ -10,7 +10,7 @@ Key differences:
 * resource pools have version column for optimistic locking
 
 ### PoC goals
-* Improve performance of `claimResources` with `resourceCount(100)`
+* Improve performance of `claimResources(resourceCount:100)`
 * There should be no performance degradation of `claimResources(100)` on
 newly created pool when there are 30k unrelated resources 
 * Parallel acquisition of distinct pools should not block
@@ -23,18 +23,18 @@ happen or will be batched by an external system
 * db pooling
 * Server, RPCs, thread pools etc.
 * Allocation strategies - only IPv4 is used for benchmarking
-* Pool properties are hardcoded in tests to: {"address": "10.0.0.0","prefix": 8}
-* Resource states not supported: on bench, free - present resource == claimed
+* Pool properties are hardcoded in tests to: `{"address": "10.0.0.0","prefix": 8}`
+* Resource states not supported: `on bench`
 
 ### Results
-* One pool allocation cannot degrade performance of other pool allocations
+* One pool allocation does not degrade performance of other pool allocations
 * Fast bulk insertion of resources using a single INSERT statement: 
 `claimResources(100)` takes ~70ms, out of which 55ms is wasmer
 * No need to check for resource duplicates - use UNIQUE constraint
 * No performance degradation when the DB contains 30k of unrelated resources
 
 ## Running
-Create database `rm-poc` according to the `migrations` folder.
+Create database `rm-poc` according to the  [migrations](migrations) folder.
 
 Export following env.vars:
 ```sh
