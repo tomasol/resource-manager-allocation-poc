@@ -135,7 +135,8 @@ struct DB {
 
 impl DB {
     pub fn new_from_env() -> Result<DB> {
-        let params = std::env::var("DB_PARAMS")?;
+        let params = std::env::var("DB_PARAMS")
+            .context("Cannot read env var DB_PARAMS")?;
         Self::new(&params)
     }
 
@@ -311,21 +312,20 @@ mod tests {
     }
 
     #[test]
-    fn wasmer_invoke_js() -> Result<()> {
+    fn wasmer_invoke_js() {
         initialize_logging();
 
-        let mut wasmer_env = WasmerEnv::new()?;
-        let output = wasmer_env.invoke_js("console.log(2+2)")?;
+        let mut wasmer_env = WasmerEnv::new().unwrap();
+        let output = wasmer_env.invoke_js("console.log(2+2)").unwrap();
         trace!("{:?}", output);
-        assert_eq!("4\n", String::from_utf8(output.stdout)?);
-        Ok(())
+        assert_eq!("4\n", String::from_utf8(output.stdout).unwrap());
     }
 
     #[test]
-    fn wasmer_invoke_and_parse() -> Result<()> {
+    fn wasmer_invoke_and_parse() {
         initialize_logging();
 
-        let mut wasmer_env = WasmerEnv::new()?;
+        let mut wasmer_env = WasmerEnv::new().unwrap();
         let script = "function invoke() {\
         return [{mykey:1, userInput, resourcePoolProperties, resourcePool, currentResources}]\
         }";
@@ -340,41 +340,39 @@ mod tests {
         });
         let current_resources = json!([
             "res1", "res2"
-        ]).as_array().ok_or(anyhow!("Unexpected"))?.to_owned();
+        ]).as_array().ok_or(anyhow!("Unexpected")).unwrap().to_owned();
 
         let actual = wasmer_env.invoke_and_parse(script, user_input, resource_pool_properties,
-                                                 resource_pool, current_resources, "invoke()")?;
+                                                 resource_pool, current_resources, "invoke()").unwrap();
         let expected = json!([{
             "mykey": 1,
             "userInput": {"input":"input"},
             "resourcePoolProperties": {"rpp":"rpp"},
             "resourcePool": {"rp":"rp"},
             "currentResources": ["res1", "res2"]
-        }]).as_array().ok_or(anyhow!("Unreachable"))?.to_owned();
+        }]).as_array().ok_or(anyhow!("Unreachable")).unwrap().to_owned();
         assert_eq!(expected, actual);
-        Ok(())
     }
 
     #[test]
-    fn db_get_ipv4_script() -> Result<()> {
+    fn db_get_ipv4_script() {
         initialize_logging();
 
-        let mut db = DB::new_from_env()?;
+        let mut db = DB::new_from_env().unwrap();
         let sw = Stopwatch::start_new();
-        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID)?;
+        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID).unwrap();
         debug!("Found row in {}ms", sw.elapsed_ms());
         trace!("found script: {}", script);
-        Ok(())
     }
 
     #[test]
-    fn execute_ipv4_script_with_mocked_data() -> Result<()> {
+    fn execute_ipv4_script_with_mocked_data() {
         initialize_logging();
 
-        let mut db = DB::new_from_env()?;
-        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID)?;
+        let mut db = DB::new_from_env().unwrap();
+        let script = db.get_allocation_script(IPV4_ALLOCATION_STRATEGY_ID).unwrap();
 
-        let mut wasmer_env = WasmerEnv::new()?;
+        let mut wasmer_env = WasmerEnv::new().unwrap();
 
         let user_input = json!({
             "resourceCount": 2
@@ -387,24 +385,22 @@ mod tests {
         let current_resources = create_some_ips(1, 2, true); // 10.0.0.1, 10.0.0.2
 
         let actual = wasmer_env.invoke_and_parse(&script, user_input.clone(), resource_pool_properties.clone(),
-                                                 resource_pool.clone(), current_resources, "invoke()")?;
+                                                 resource_pool.clone(), current_resources, "invoke()").unwrap();
         let expected = json!([
             {"address":"10.0.0.0"},
             {"address":"10.0.0.3"}
-        ]).as_array().ok_or(anyhow!("Unreachable"))?.to_owned();
+        ]).as_array().ok_or(anyhow!("Unreachable")).unwrap().to_owned();
         assert_eq!(expected, actual);
 
         let current_resources = create_some_ips(0, 4, true); // 10.0.0.0 - 10.0.0.3
 
         let actual = wasmer_env.invoke_and_parse(&script, user_input, resource_pool_properties,
-                                                 resource_pool, current_resources, "invoke()")?;
+                                                 resource_pool, current_resources, "invoke()").unwrap();
         let expected = json!([
             {"address":"10.0.0.4"},
             {"address":"10.0.0.5"}
-        ]).as_array().ok_or(anyhow!("Unreachable"))?.to_owned();
+        ]).as_array().ok_or(anyhow!("Unreachable")).unwrap().to_owned();
         assert_eq!(expected, actual);
-
-        Ok(())
     }
 
     fn create_random_pool(db: &mut DB) -> Result<ResourcePool> {
@@ -415,30 +411,29 @@ mod tests {
     }
 
     #[test]
-    fn db_resource_pool() -> Result<()> {
+    fn db_resource_pool() {
         initialize_logging();
 
-        let mut db = DB::new_from_env()?;
+        let mut db = DB::new_from_env().unwrap();
         let sw = Stopwatch::start_new();
-        let inserted = create_random_pool(&mut db)?;
+        let inserted = create_random_pool(&mut db).unwrap();
         debug!("Inserted row in {}ms", sw.elapsed_ms());
         let sw = Stopwatch::start_new();
-        let by_name = db.get_resource_pool_by_name(&inserted.name)?;
+        let by_name = db.get_resource_pool_by_name(&inserted.name).unwrap();
         debug!("Found row in {}ms", sw.elapsed_ms());
         let sw = Stopwatch::start_new();
         assert_eq!(inserted, by_name);
-        let by_id = db.get_resource_pool_by_id(inserted.id)?;
+        let by_id = db.get_resource_pool_by_id(inserted.id).unwrap();
         debug!("Found row in {}ms", sw.elapsed_ms());
         assert_eq!(inserted, by_id);
-        Ok(())
     }
 
     #[test]
-    fn db_insert_resources_duplicates_should_fail() -> Result<()> {
+    fn db_insert_resources_duplicates_should_fail() {
         initialize_logging();
 
-        let mut db = DB::new_from_env()?;
-        let pool = create_random_pool(&mut db)?;
+        let mut db = DB::new_from_env().unwrap();
+        let pool = create_random_pool(&mut db).unwrap();
         let resource_pool_id = pool.id;
 
         let resources = vec!(
@@ -447,16 +442,15 @@ mod tests {
         );
 
         db.insert_resources(pool, resources).expect_err("Should not accept duplicates");
-        Ok(())
     }
 
     #[test]
-    fn db_resources() -> Result<()> {
+    fn db_resources() {
         initialize_logging();
 
         const ROW_COUNT: usize = 100;
-        let mut db = DB::new_from_env()?;
-        let pool = create_random_pool(&mut db)?;
+        let mut db = DB::new_from_env().unwrap();
+        let pool = create_random_pool(&mut db).unwrap();
 
         let resource_pool_id = pool.id;
         let old_version = pool.version;
@@ -464,20 +458,19 @@ mod tests {
         let mut resources = Vec::with_capacity(ROW_COUNT);
         for idx in 0..ROW_COUNT {
             resources.push(Resource::new_from_str(resource_pool_id,
-                                                  &format!("{{\"address\":\"1.1.1.{}\"}}", idx))?);
+                                                  &format!("{{\"address\":\"1.1.1.{}\"}}", idx)).unwrap());
         }
-        let (pool, resources) = db.insert_resources(pool, resources)?;
+        let (pool, resources) = db.insert_resources(pool, resources).unwrap();
         debug!("inserted {} rows in {}ms", resources.len(), sw.elapsed_ms());
         // check that version is incremented
         assert_eq!(pool.version, old_version + 1);
-        assert_eq!(db.get_resource_pool_by_id(resource_pool_id)?.version, old_version + 1);
+        assert_eq!(db.get_resource_pool_by_id(resource_pool_id).unwrap().version, old_version + 1);
         // get resources
-        let found_resources = db.get_resources(resource_pool_id)?;
+        let found_resources = db.get_resources(resource_pool_id).unwrap();
         assert_eq!(ROW_COUNT, found_resources.len());
         // IDs are added, just compare values
         assert_eq!(resources.iter().map(|it| &it.value).collect::<Vec<&Value>>(),
                    found_resources.iter().map(|it| &it.value).collect::<Vec<&Value>>());
-        Ok(())
     }
 
     // Get env.var value. If present, panic on parsing error.
@@ -489,17 +482,17 @@ mod tests {
     }
 
     #[test]
-    fn execute_ipv4_script_with_db() -> Result<()> {
+    fn execute_ipv4_script_with_db() {
         initialize_logging();
 
         let sw = Stopwatch::start_new();
         let row_count = get_env_value("ROW_COUNT", 100);
         let iterations = get_env_value("ITERATIONS", 2);
 
-        let mut db = DB::new_from_env()?;
-        let mut pool = create_random_pool(&mut db)?;
+        let mut db = DB::new_from_env().unwrap();
+        let mut pool = create_random_pool(&mut db).unwrap();
         let old_version = pool.version;
-        let mut wasmer_env = WasmerEnv::new()?;
+        let mut wasmer_env = WasmerEnv::new().unwrap();
         let user_input = json!({
             "resourceCount": row_count
         });
@@ -508,12 +501,12 @@ mod tests {
             info!("Starting iteration {}", iteration);
             let sw = Stopwatch::start_new();
             let (pool2, _resources) = db.allocate_resources(
-                pool, &mut wasmer_env, user_input.clone())?;
+                pool, &mut wasmer_env, user_input.clone()).unwrap();
             pool = pool2;
             // check that version is incremented
             let expected_version = old_version + iteration;
             assert_eq!(pool.version, expected_version);
-            assert_eq!(db.get_resource_pool_by_id(pool.id)?.version, expected_version);
+            assert_eq!(db.get_resource_pool_by_id(pool.id).unwrap().version, expected_version);
 
             if env::var("VERIFY_RESOURCES").is_ok() {
                 if iterations * row_count > 255 {
@@ -521,7 +514,7 @@ mod tests {
                     panic!("Too many IPs to be created - create_some_ips would overflow. Turn off VERIFY_RESOURCES");
                 }
                 // get resources, might slow down the performance
-                let found_resources = db.get_resources(pool.id)?;
+                let found_resources = db.get_resources(pool.id).unwrap();
                 let mut actual = found_resources.into_iter()
                     .map(|it| it.value.get("address").expect("address must exist")
                         .as_str().expect("address value must be a string").to_owned())
@@ -537,11 +530,10 @@ mod tests {
             }
             info!("Inserted {} resources in {}ms", row_count, sw.elapsed_ms());
         }
-        Ok(())
     }
 
     #[test]
-    fn parallel_allocation() -> Result<()> {
+    fn parallel_allocation() {
         initialize_logging();
 
         let sw = Stopwatch::start_new();
@@ -549,12 +541,11 @@ mod tests {
         let mut join_handles = vec![];
         for _ in 0..number_of_threads {
             join_handles.push(thread::spawn(move || {
-                execute_ipv4_script_with_db().unwrap();
+                execute_ipv4_script_with_db();
             }));
         }
         // join all
         join_handles.into_iter().for_each(|handle| handle.join().unwrap());
         info!("Finished executing {} threads in {}ms", number_of_threads, sw.elapsed_ms());
-        Ok(())
     }
 }
