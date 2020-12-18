@@ -1078,6 +1078,7 @@ name = "resource-manager-allocate"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "num-traits",
  "postgres",
  "quanta 0.6.5",
  "rand 0.7.3",

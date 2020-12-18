@@ -292,9 +292,12 @@ mod tests {
         });
     }
 
-    fn create_some_ips(start_idx: usize, count: usize, wrap_in_properties: bool) -> Vec<Value> {
-        let mut result = Vec::with_capacity(count);
-        for idx in start_idx..(start_idx + count) {
+    fn create_some_ips<T>(start_idx: T, count: T, wrap_in_properties: bool) -> Vec<Value>
+        where T: num_traits::identities::One + num_traits::int::PrimInt + std::fmt::Display {
+
+        let mut result = Vec::new();
+        let mut idx: T = start_idx;
+        while idx != start_idx + count {
             let value = json!({"address": &format!("10.0.0.{}", idx)});
             let value = if wrap_in_properties {
                 json!({"Properties": value})
@@ -302,6 +305,7 @@ mod tests {
                 value
             };
             result.push(value);
+            idx = idx + T::one();
         }
         result
     }
@@ -490,7 +494,7 @@ mod tests {
 
         let sw = Stopwatch::start_new();
         let row_count = get_env_value("ROW_COUNT", 100);
-        let iterations = get_env_value("ITERATIONS", 1);
+        let iterations = get_env_value("ITERATIONS", 2);
 
         let mut db = DB::new_from_env()?;
         let mut pool = create_random_pool(&mut db)?;
@@ -512,12 +516,24 @@ mod tests {
             assert_eq!(db.get_resource_pool_by_id(pool.id)?.version, expected_version);
 
             if env::var("VERIFY_RESOURCES").is_ok() {
-                // FIXME: this fails when creating more than 255 resources because of naive create_some_ips
+                if iterations * row_count > 255 {
+                    // FIXME
+                    panic!("Too many IPs to be created - create_some_ips would overflow. Turn off VERIFY_RESOURCES");
+                }
                 // get resources, might slow down the performance
                 let found_resources = db.get_resources(pool.id)?;
-                let expected = create_some_ips(0, row_count, false);
-                assert_eq!(expected,
-                           found_resources.into_iter().map(|it| it.value).collect::<Vec<Value>>());
+                let mut actual = found_resources.into_iter()
+                    .map(|it| it.value.get("address").expect("address must exist")
+                        .as_str().expect("address value must be a string").to_owned())
+                    .collect::<Vec<String>>();
+                actual.sort();
+                let mut expected = create_some_ips(0, row_count * iteration, false)
+                    .into_iter()
+                    .map(|value| value.get("address").expect("address must exist")
+                        .as_str().expect("address value must be a string").to_owned())
+                    .collect::<Vec<String>>();
+                expected.sort();
+                assert_eq!(expected, actual);
             }
             info!("Inserted {} resources in {}ms", row_count, sw.elapsed_ms());
         }

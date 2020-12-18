@@ -18,6 +18,7 @@ serde_derive = "1.0.118"
 serde = "1.0.118"
 rand = "0.7.3"
 stopwatch = "0.0.7"
+num-traits = "0.2.14"
 
 [dependencies.postgres]
 version = "0.18.1"
