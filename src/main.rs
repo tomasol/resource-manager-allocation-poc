@@ -210,9 +210,11 @@ impl DB {
         trace!("Inserted {} resources", inserted_count);
         ensure!(inserted_count == items.len() as u64, "Insertion of resources returned wrong number of rows");
         // update pool version
+        let expected_current_version = pool.version;
         pool.version += 1;
-        let updated_count = transaction.execute("UPDATE resource_pools SET version=$1 WHERE id=$2",
-                                                &[&pool.version, &pool.id])?;
+        let updated_count = transaction.execute(
+            "UPDATE resource_pools SET version=$1 WHERE id=$2 AND version=$3",
+            &[&pool.version, &pool.id, &expected_current_version])?;
         ensure!(updated_count == 1, "Update of resource_pools returned wrong number of rows");
         transaction.commit()?;
         Ok((ResourcePool {
